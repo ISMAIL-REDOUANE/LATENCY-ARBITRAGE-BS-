@@ -1,0 +1,17 @@
+services:
+  xchain-arb-bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - BASE_RPC_URL=${BASE_RPC_URL}
+      - PRIVATE_RPC_URL=${PRIVATE_RPC_URL:-}
+      - BASE_PRIVATE_KEY=${BASE_PRIVATE_KEY}
+      - SLIPPAGE_TOLERANCE=${SLIPPAGE_TOLERANCE:-0.005}
+      - GAS_MULTIPLIER=${GAS_MULTIPLIER:-1.1}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

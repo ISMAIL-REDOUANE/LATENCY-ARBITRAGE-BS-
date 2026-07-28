@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>X-Chain Arbitrage Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0a0a0a;
+  color: #ccc;
+  font-family: 'Courier New', monospace;
+  padding: 20px;
+  min-height: 100vh;
+}
+h1 {
+  text-align: center;
+  font-size: 1.4rem;
+  color: #0f0;
+  margin-bottom: 20px;
+  letter-spacing: 2px;
+}
+.stats-row {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.stat-card {
+  background: #141414;
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 8px 16px;
+  text-align: center;
+  min-width: 100px;
+}
+.stat-card .label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  color: #666;
+  letter-spacing: 1px;
+}
+.stat-card .value {
+  font-size: 1.2rem;
+  font-weight: bold;
+  font-variant-numeric: tabular-nums;
+}
+.green { color: #00ff00; }
+.red { color: #ff0000; }
+.yellow { color: #ffcc00; }
+.cyan { color: #00ccff; }
+table {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto 20px;
+  border-collapse: collapse;
+  background: #141414;
+  border: 1px solid #222;
+  border-radius: 6px;
+  overflow: hidden;
+}
+th {
+  background: #1a1a1a;
+  color: #888;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: 8px 10px;
+  text-align: right;
+}
+th:first-child { text-align: left; }
+td {
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  border-top: 1px solid #222;
+}
+td:first-child {
+  text-align: left;
+  font-weight: bold;
+  color: #ddd;
+}
+tr.arb-highlight {
+  background: #1a1a00;
+}
+tr.arb-highlight td:first-child { color: #ffcc00; }
+tr:hover { background: #1c1c1c; }
+.connection-status {
+  text-align: center;
+  margin-bottom: 12px;
+  font-size: 0.8rem;
+  color: #666;
+}
+.connection-status.connected { color: #0f0; }
+.connection-status.disconnected { color: #f00; }
+.chart-container {
+  max-width: 1000px;
+  margin: 0 auto;
+  background: #141414;
+  border: 1px solid #222;
+  border-radius: 6px;
+  padding: 12px;
+  height: 200px;
+}
+.chart-container canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#last-trade-value { font-size: 0.85rem; text-align: center; padding: 4px; }
+@media (max-width: 600px) {
+  th, td { font-size: 0.7rem; padding: 5px; }
+  .stat-card .value { font-size: 1rem; }
+  h1 { font-size: 1.1rem; }
+}
+</style>
+</head>
+<body>
+<h1>XCHAIN ARBITRAGE · MONITOR</h1>
+<div id="status" class="connection-status disconnected">disconnected</div>
+
+<div class="stats-row">
+  <div class="stat-card">
+    <div class="label">Total Profit</div>
+    <div id="profit-value" class="value green">$0.00</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total Trades</div>
+    <div id="trades-value" class="value">0</div>
+  </div>
+  <div class="stat-card" style="flex:1;max-width:400px">
+    <div class="label">Last Trade</div>
+    <div id="last-trade-value" class="value">---</div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Symbol</th>
+      <th>BSC Price</th>
+      <th>BASE Price</th>
+      <th>Spread</th>
+    </tr>
+  </thead>
+  <tbody id="pairs-body"></tbody>
+</table>
+
+<div class="chart-container">
+  <canvas id="chart"></canvas>
+</div>
+
+<script>
+(function() {
+  const CHART_POINTS = 100;
+  let spreadHistory = [];
+  let selectedSymbol = null;
+
+  const statusEl = document.getElementById('status');
+  const profitEl = document.getElementById('profit-value');
+  const tradesEl = document.getElementById('trades-value');
+  const lastTradeEl = document.getElementById('last-trade-value');
+  const tbody = document.getElementById('pairs-body');
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+
+  function resizeCanvas() {
+    const rect = canvas.parentElement.getBoundingClientRect();
+    canvas.width = rect.width - 24;
+    canvas.height = rect.height - 24;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  function renderPairs(pairs) {
+    tbody.innerHTML = '';
+    if (!pairs || pairs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#444">waiting for data…</td></tr>';
+      return;
+    }
+    pairs.forEach(p => {
+      const tr = document.createElement('tr');
+      const isArb = p.spread_pct != null && p.spread_pct > 0.5;
+      if (isArb) tr.className = 'arb-highlight';
+
+      const sym = document.createElement('td');
+      sym.textContent = p.symbol;
+      tr.appendChild(sym);
+
+      const bsc = document.createElement('td');
+      bsc.textContent = p.binance_price != null ? '$' + p.binance_price.toFixed(4) : '---';
+      bsc.style.color = p.binance_price != null ? '#00ccff' : '#444';
+      tr.appendChild(bsc);
+
+      const base = document.createElement('td');
+      base.textContent = p.base_price != null ? '$' + p.base_price.toFixed(4) : '---';
+      base.style.color = p.base_price != null ? '#00ccff' : '#444';
+      tr.appendChild(base);
+
+      const spread = document.createElement('td');
+      if (p.spread_pct != null) {
+        const v = p.spread_pct;
+        spread.textContent = v.toFixed(4) + '%';
+        if (v > 0.5) spread.style.color = '#ffcc00';
+        else if (v > 0.2) spread.style.color = '#ff9900';
+        else spread.style.color = '#888';
+      } else {
+        spread.textContent = '---';
+        spread.style.color = '#444';
+      }
+      tr.appendChild(spread);
+
+      tr.addEventListener('click', () => {
+        selectedSymbol = p.symbol;
+        document.querySelectorAll('tr').forEach(r => r.style.outline = '');
+        tr.style.outline = '1px solid #00ff00';
+      });
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  function updateProfit(value) {
+    if (value >= 0) { profitEl.className = 'value green'; profitEl.textContent = '+$' + value.toFixed(2); }
+    else { profitEl.className = 'value red'; profitEl.textContent = '-$' + Math.abs(value).toFixed(2); }
+  }
+
+  function updateLastTrade(trade) {
+    if (!trade) { lastTradeEl.textContent = '---'; return; }
+    const d = new Date(trade.timestamp * 1000);
+    const time = d.toLocaleTimeString();
+    const side = trade.side;
+    const color = side === 'BUY' ? 'green' : 'red';
+    lastTradeEl.innerHTML = '<span class="' + color + '">' + side + '</span> ' +
+      trade.quantity.toFixed(4) + ' @ $' + trade.price.toFixed(2) +
+      ' profit: <span class="' + (trade.profit >= 0 ? 'green' : 'red') + '">$' + trade.profit.toFixed(2) + '</span> ' +
+      '<span style="color:#666;font-size:0.7rem">' + time + '</span>';
+  }
+
+  function updateChart() {
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (spreadHistory.length < 2) return;
+    const max = Math.max(...spreadHistory);
+    const min = Math.min(...spreadHistory);
+    const range = max - min || 1;
+
+    ctx.beginPath();
+    ctx.strokeStyle = '#00ff00';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < spreadHistory.length; i++) {
+      const x = (i / (spreadHistory.length - 1)) * w;
+      const y = h - ((spreadHistory[i] - min) / range) * h;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+
+    ctx.fillStyle = '#00ff00';
+    ctx.font = '10px monospace';
+    ctx.fillText(max.toFixed(4) + '%', 4, 10);
+    ctx.fillText(min.toFixed(4) + '%', 4, h - 2);
+  }
+
+  function connect() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(protocol + '//' + location.host + '/ws');
+    statusEl.textContent = 'connecting...';
+    statusEl.className = 'connection-status disconnected';
+
+    ws.onopen = function() {
+      statusEl.textContent = 'connected';
+      statusEl.className = 'connection-status connected';
+    };
+
+    ws.onmessage = function(event) {
+      try {
+        const data = JSON.parse(event.data);
+        renderPairs(data.pairs);
+        updateProfit(data.total_profit);
+        tradesEl.textContent = data.total_trades;
+        updateLastTrade(data.last_trade);
+
+        const best = data.pairs && data.pairs[0];
+        if (best && best.spread_pct != null) {
+          spreadHistory.push(best.spread_pct);
+          if (spreadHistory.length > CHART_POINTS) spreadHistory.shift();
+          updateChart();
+        }
+      } catch(e) {}
+    };
+
+    ws.onclose = function() {
+      statusEl.textContent = 'disconnected (reconnecting...)';
+      statusEl.className = 'connection-status disconnected';
+      setTimeout(connect, 1000);
+    };
+
+    ws.onerror = function() { ws.close(); };
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>
