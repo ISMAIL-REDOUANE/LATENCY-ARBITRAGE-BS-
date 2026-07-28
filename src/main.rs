@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use serde::Serialize;
 use std::time::Instant;
+use tracing::info;
 
 /// Per-symbol price snapshot from both venues
 #[derive(Debug, Clone, Serialize)]
@@ -82,17 +83,9 @@ impl PriceState {
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let symbols = vec![
-        "SUSDE".into(),
-        "USDC".into(),
-        "DAI".into(),
-        "USDT".into(),
-        "GHO".into(),
-        "EURC".into(),
-        "ETH".into(),
-        "CBETH".into(),
-        "RETH".into(),
-    ];
+    let symbols = vec!["ETH".to_string()];
+    let base_rpc_url = std::env::var("BASE_RPC_URL").unwrap_or_else(|_| "wss://base-rpc.publicnode.com".to_string());
+    info!("Starting bot with symbols={:?}, BASE_RPC_URL={}", symbols, base_rpc_url);
 
     let price_state = Arc::new(RwLock::new(PriceState::new()));
 
@@ -116,6 +109,8 @@ async fn main() {
         dashboard::run_dashboard(dash_state).await;
     });
 
+    let mut snapshot_log_counter = 0u32;
+
     let cfg = executor::ExecutorConfig {
         min_profit_pct: 0.1,
         trade_size_usd: 100.0,
@@ -129,6 +124,11 @@ async fn main() {
             let ps = price_state.read().await;
             ps.snapshot()
         };
+
+        snapshot_log_counter += 1;
+        if snapshot_log_counter % 2 == 0 {
+            info!("Snapshot: {:?}", pairs);
+        }
 
         // Send snapshot to dashboard
         dashboard::send_price_update(&app_state, pairs.clone()).await;

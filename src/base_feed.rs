@@ -1,50 +1,111 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use futures_util::StreamExt;
+use tracing::{info, error};
 use crate::PriceState;
+use alloy::network::Ethereum;
+use alloy::providers::{Provider, ProviderBuilder, RootProvider, WsConnect};
+use alloy::pubsub::PubSubFrontend;
+use alloy::primitives::Address;
+use alloy::sol;
 
-const POOLS: &[(&str, &str, &str, &str)] = &[
-    // (symbol, token_a, token_b, pool_address)
-    ("SUSDE", "0x5C5b196aB0C7AcC0f9089C5BE1bA6cB5C6b7A8c9", "0x0000000000000000000000000000000000000000", "0x1234567890abcdef1234567890abcdef12345678"),
-    ("USDC",  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "0x0000000000000000000000000000000000000000", "0x2345678901abcdef2345678901abcdef23456789"),
-    ("DAI",   "0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb", "0x0000000000000000000000000000000000000000", "0x3456789012abcdef3456789012abcdef34567890"),
-    ("USDT",  "0xfde4C96cA859bE7bE2F19a5360E40Bb9d3a6A0d7", "0x0000000000000000000000000000000000000000", "0x4567890123abcdef4567890123abcdef45678901"),
-    ("GHO",   "0x7Dc3B0b6A1eE0A3c9B2A8f1d4E5F6a7B8c9D0E1", "0x0000000000000000000000000000000000000000", "0x5678901234abcdef5678901234abcdef56789012"),
-    ("EURC",  "0x60a3E35Cc8b750E3C5c2C0B2b7E9F1d4C8b6A7e", "0x0000000000000000000000000000000000000000", "0x6789012345abcdef6789012345abcdef67890123"),
-    ("ETH",   "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE", "0x0000000000000000000000000000000000000000", "0x7890123456abcdef7890123456abcdef78901234"),
-    ("CBETH", "0x2Ae3F1Ec7F1FfB2b5b3b4c5d6e7f8a9b0c1d2e3", "0x0000000000000000000000000000000000000000", "0x8901234567abcdef8901234567abcdef89012345"),
-    ("RETH",  "0x3Bf4C2D8e9F0a1b2c3d4e5f6a7b8c9d0e1f2a3", "0x0000000000000000000000000000000000000000", "0x9012345678abcdef9012345678abcdef90123456"),
+sol! {
+    #[sol(rpc)]
+    interface IUniswapV3Pool {
+        function slot0() external view returns (
+            uint160 sqrtPriceX96,
+            int24 tick,
+            uint16 observationIndex,
+            uint16 observationCardinality,
+            uint16 observationCardinalityNext,
+            uint8 feeProtocol,
+            bool unlocked
+        );
+    }
+}
+
+const POOLS: &[(&str, &str)] = &[
+    ("ETH", "0xd0b53d9277642d899df5c87a3966a349a798f224"),  // WETH/USDC 0.05%
+    ("ETH", "0x6c561b446416e1a00e8e93e221854d6ea4171372"),  // WETH/USDC 0.30%
 ];
 
 pub async fn start_base_feed(
     price_state: Arc<RwLock<PriceState>>,
 ) {
+    let rpc_url = std::env::var("BASE_RPC_URL").unwrap_or_else(|_| {
+        "wss://base-rpc.publicnode.com".to_string()
+    });
+
+    info!("BASE_RPC_URL resolved to: {}", rpc_url);
+
     loop {
-        let mut futures = Vec::new();
-        for &(symbol, token_a, token_b, pool) in POOLS {
-            let ps = price_state.clone();
-            let sym = symbol.to_owned();
-            let a = token_a.to_owned();
-            let b = token_b.to_owned();
-            let p = pool.to_owned();
-            futures.push(tokio::spawn(async move {
-                fetch_pool_price(&sym, &a, &b, &p, &ps).await;
-            }));
+        match connect_and_listen(&rpc_url, &price_state).await {
+            Ok(_) => {}
+            Err(e) => error!("Base RPC disconnected: {}, reconnecting in 5s…", e),
         }
-        for f in futures {
-            let _ = f.await;
-        }
-        tokio::time::sleep(std::time::Duration::from_secs(12)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
-async fn fetch_pool_price(
-    symbol: &str,
-    _token_a: &str,
-    _token_b: &str,
-    _pool: &str,
+async fn connect_and_listen(
+    rpc_url: &str,
     price_state: &Arc<RwLock<PriceState>>,
-) {
-    let dummy_price = 1.0 + fastrand::f64() * 0.01 - 0.005;
-    let mut ps = price_state.write().await;
-    ps.update_price(symbol, "BASE", dummy_price);
+) -> Result<(), Box<dyn std::error::Error>> {
+    info!("Connecting to Base RPC... URL: {}", rpc_url);
+    let provider: RootProvider<PubSubFrontend, Ethereum> = ProviderBuilder::default()
+        .on_ws(WsConnect::new(rpc_url))
+        .await
+        .map_err(|e| {
+            error!("Base RPC WS connection failed: {}", e);
+            e
+        })?;
+    info!("Connected, subscribing to newHeads...");
+
+    let sub = provider.subscribe_blocks().await.map_err(|e| {
+        error!("Failed to subscribe to newHeads: {}", e);
+        e
+    })?;
+    let mut stream = sub.into_stream();
+    info!("Subscribed to newHeads successfully");
+
+    while let Some(_block) = stream.next().await {
+        info!("New block received! Fetching slot0...");
+        let mut handles = Vec::new();
+        for &(symbol, pool_addr) in POOLS {
+            let ps = price_state.clone();
+            let prov = provider.clone();
+            let pool_address: Address = pool_addr.parse()?;
+            let sym = symbol.to_owned();
+
+            handles.push(tokio::spawn(async move {
+                let pool = IUniswapV3Pool::new(pool_address, &prov);
+                match pool.slot0().call().await {
+                    Ok(result) => {
+                        let sqrt = result.sqrtPriceX96;
+                        let limbs = sqrt.as_limbs();
+                        let sqrt_val = (limbs[1] as u128) << 64 | limbs[0] as u128;
+                        let sqrt_f64 = sqrt_val as f64;
+                        info!("slot0 result: sqrtPriceX96={} (raw u128={})", sqrt, sqrt_val);
+                        // WETH is token0 (18 decimals), USDC is token1 (6 decimals)
+                        // sqrtPriceX96 = sqrt(token1/token0) * 2^96
+                        // price (USDC per WETH) = (sqrtPriceX96 / 2^96)^2 * 10^(18-6)
+                        let price = (sqrt_f64 / 2_f64.powi(96)).powi(2) * 1e12;
+                        info!("Calculated ETH price: {}", price);
+                        let mut state = ps.write().await;
+                        state.update_price(&sym, "BASE", price);
+                        info!("State updated for ETH on BASE with price={}", price);
+                    }
+                    Err(e) => {
+                        error!("Error fetching slot0 for pool {}: {}", sym, e);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            let _ = h.await;
+        }
+    }
+
+    error!("Base RPC stream ended unexpectedly");
+    Err("Base RPC stream ended".into())
 }

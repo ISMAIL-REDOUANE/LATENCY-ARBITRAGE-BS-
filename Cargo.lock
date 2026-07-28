@@ -4352,7 +4352,6 @@ version = "0.1.0"
 dependencies = [
  "alloy",
  "axum",
- "fastrand",
  "futures-util",
  "reqwest",
  "serde",

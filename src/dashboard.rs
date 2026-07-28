@@ -59,6 +59,7 @@ impl AppState {
 }
 
 pub async fn send_price_update(app_state: &AppState, pairs: Vec<SymbolSnapshot>) {
+    info!("send_price_update: sending {} pairs to frontend", pairs.len());
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
