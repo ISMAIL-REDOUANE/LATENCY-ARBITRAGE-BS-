@@ -82,10 +82,9 @@ async fn connect_and_listen(
                 match pool.slot0().call().await {
                     Ok(result) => {
                         let sqrt = result.sqrtPriceX96;
-                        let limbs = sqrt.as_limbs();
-                        let sqrt_val = (limbs[1] as u128) << 64 | limbs[0] as u128;
-                        let sqrt_f64 = sqrt_val as f64;
-                        info!("slot0 result: sqrtPriceX96={} (raw u128={})", sqrt, sqrt_val);
+                        let sqrt_u128: u128 = sqrt.try_into().expect("sqrtPriceX96 fits in u128");
+                        let sqrt_f64 = sqrt_u128 as f64;
+                        info!("slot0 result: sqrtPriceX96={} (raw u128={})", sqrt, sqrt_u128);
                         // WETH is token0 (18 decimals), USDC is token1 (6 decimals)
                         // sqrtPriceX96 = sqrt(token1/token0) * 2^96
                         // price (USDC per WETH) = (sqrtPriceX96 / 2^96)^2 * 10^(18-6)

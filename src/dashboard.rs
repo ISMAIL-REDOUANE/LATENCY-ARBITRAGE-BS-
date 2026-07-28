@@ -59,6 +59,9 @@ impl AppState {
 }
 
 pub async fn send_price_update(app_state: &AppState, pairs: Vec<SymbolSnapshot>) {
+    if pairs.is_empty() {
+        tracing::warn!("send_price_update: pairs is EMPTY — no data from feeds yet");
+    }
     info!("send_price_update: sending {} pairs to frontend", pairs.len());
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
